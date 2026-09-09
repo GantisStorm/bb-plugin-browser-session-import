@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Manage saved cookie profiles, shared browser defaults, and scoped session switching.",
+  "description": "Import one cookie session into the shared BB Browser.",
   "author": {
     "name": "GantisStorm",
     "url": "https://github.com/GantisStorm"
@@ -18,7 +18,7 @@
   },
   "bb": {
     "name": "Browser Session Import",
-    "description": "Saved cookie profiles, shared defaults, and browser switching in plugin settings.",
+    "description": "Import one session into the shared BB Browser",
     "branding": {
       "icon": "File"
     },
