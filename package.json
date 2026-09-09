@@ -1,9 +1,9 @@
 {
   "name": "bb-plugin-browser",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
-  "description": "Imports local browser profiles and JSON cookies into BB Browser sessions.",
+  "description": "Manage saved cookie profiles, shared browser defaults, and scoped session switching.",
   "author": {
     "name": "GantisStorm",
     "url": "https://github.com/GantisStorm"
@@ -18,7 +18,7 @@
   },
   "bb": {
     "name": "Browser Session Import",
-    "description": "Import local browser profiles and JSON cookie sessions by GantisStorm.",
+    "description": "Saved cookie profiles, shared defaults, and browser switching in plugin settings.",
     "branding": {
       "icon": "File"
     },
