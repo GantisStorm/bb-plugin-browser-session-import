@@ -708,21 +708,6 @@ export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
     listSources: () => sources(),
-    navigate: ({ tabId, wsEndpoint, url }, context) =>
-      withPage(
-        wsEndpoint,
-        tabId,
-        context.signal,
-        async (connection, sessionId) => {
-          const result = z
-            .object({ errorText: z.string().optional() })
-            .parse(
-              await connection.request("Page.navigate", { url }, sessionId),
-            );
-          if (result.errorText) throw new Error(result.errorText);
-          return { ok: true as const };
-        },
-      ),
     reload: ({ tabId, wsEndpoint }, context) =>
       withPage(
         wsEndpoint,
@@ -754,24 +739,5 @@ export default experimental_defineHostEntry({
     },
     importCookies: ({ cookies, tabId, wsEndpoint }, context) =>
       writeCookies(wsEndpoint, tabId, cookies, context.signal),
-    clear: ({ tabId, wsEndpoint }, context) =>
-      withPage(
-        wsEndpoint,
-        tabId,
-        context.signal,
-        async (connection, sessionId) => {
-          const before = z
-            .object({ cookies: z.array(z.unknown()) })
-            .parse(
-              await connection.request("Network.getAllCookies", {}, sessionId),
-            );
-          await connection.request(
-            "Network.clearBrowserCookies",
-            {},
-            sessionId,
-          );
-          return { clearedCookies: before.cookies.length };
-        },
-      ),
   },
 });

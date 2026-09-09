@@ -12,7 +12,6 @@ import type {
   DiscoveredBrowser,
   SavedProfile,
   SharedDefault,
-  ImportRecord,
 } from "./contracts.js";
 
 type Host = { id: string; name: string; status: "connected" | "disconnected" };
@@ -42,6 +41,8 @@ function SavedProfileRow({
 }) {
   const [name, setName] = useState(profile.name);
   useEffect(() => setName(profile.name), [profile.name]);
+  const renameDisabled =
+    disabled || !name.trim() || name.trim() === profile.name;
   return (
     <li className="grid gap-2 border-b border-border py-3 last:border-b-0">
       <div className="flex flex-wrap items-center gap-2">
@@ -57,7 +58,7 @@ function SavedProfileRow({
         </label>
         <Button
           variant="outline"
-          disabled={disabled || !name.trim() || name.trim() === profile.name}
+          disabled={renameDisabled}
           onClick={() => onRename(profile.id, name.trim())}
         >
           Rename
@@ -88,7 +89,6 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
   const [hostId, setHostId] = useState("");
   const [profiles, setProfiles] = useState<SavedProfile[]>([]);
   const [defaults, setDefaults] = useState<SharedDefault[]>([]);
-  const [history, setHistory] = useState<ImportRecord[]>([]);
   const [sources, setSources] = useState<CookieSource[]>([]);
   const [nativeChoice, setNativeChoice] = useState("");
   const [name, setName] = useState("");
@@ -119,25 +119,15 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
   const defaultName = profiles.find(
     (profile) => profile.id === hostDefault?.profileId,
   )?.name;
-  const destination = selectedBrowser
-    ? `${selectedBrowser.hostId}/${shared ? "personal" : `automation/${selectedBrowser.profileId}`}`
-    : null;
-  const destinationHistory = history.filter(
-    (entry) => entry.destination === destination,
-  );
   const compatible = profiles.filter(
     (profile) => profile.kind === "json" || profile.hostId === hostId,
   );
 
   const refreshProfiles = async () => {
-    const [overview, entries] = await Promise.all([
-      rpc.call("profiles", {}),
-      rpc.call("history", {}),
-    ]);
+    const overview = await rpc.call("profiles", {});
     if (!mounted.current) return;
     setProfiles(overview.profiles);
     setDefaults(overview.defaults);
-    setHistory(entries);
     setProfileChoice((current) =>
       overview.profiles.some((profile) => profile.id === current)
         ? current
@@ -146,12 +136,8 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
   };
   useEffect(() => {
     mounted.current = true;
-    void Promise.all([
-      rpc.call("listHosts", {}),
-      rpc.call("profiles", {}),
-      rpc.call("history", {}),
-    ])
-      .then(([nextHosts, overview, entries]) => {
+    void Promise.all([rpc.call("listHosts", {}), rpc.call("profiles", {})])
+      .then(([nextHosts, overview]) => {
         if (!mounted.current) return;
         setHosts(nextHosts);
         setHostId(
@@ -159,7 +145,6 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
         );
         setProfiles(overview.profiles);
         setDefaults(overview.defaults);
-        setHistory(entries);
       })
       .catch((reason) => {
         if (mounted.current)
@@ -210,10 +195,10 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
           Cookie profiles
         </h3>
         <p className="text-muted-foreground">
-          Save native-browser profile references or JSON cookie exports here.
-          This copies login cookies, not extensions, passwords, bookmarks, or
-          local storage. Saved JSON cookies remain private on the BB server and
-          are never returned to this page.
+          Save a native-browser profile reference or a JSON cookie export, then
+          apply it to BB&apos;s Browser. This copies login cookies, not
+          extensions, passwords, bookmarks, or local storage. Saved JSON cookies
+          stay private on the BB server and are never returned to this page.
         </p>
         <label className="grid gap-1">
           Browser host
@@ -361,7 +346,7 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
                     });
                     await refreshProfiles();
                     if (mounted.current) setName("");
-                    return "Native profile saved. Its current cookies will be read only when you apply it.";
+                    return "Native profile saved. Its current cookies are read only when you apply it.";
                   })
                 }
               >
@@ -389,7 +374,10 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
                 defaults={defaults}
                 onRename={(id, nextName) =>
                   operate(async () => {
-                    await rpc.call("renameProfile", { id, name: nextName });
+                    await rpc.call("renameProfile", {
+                      id,
+                      name: nextName,
+                    });
                     await refreshProfiles();
                     return "Profile renamed";
                   })
@@ -397,7 +385,7 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
                 onRemove={(item) => {
                   if (
                     window.confirm(
-                      `Delete saved profile “${item.name}”? Its saved JSON cookies and default label will be removed. Cookies already applied to browsers will NOT be cleared.`,
+                      `Delete saved profile “${item.name}”? Its saved JSON cookies and default label are removed. Cookies already applied to browsers are NOT cleared.`,
                     )
                   )
                     operate(async () => {
@@ -425,7 +413,7 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
         aria-labelledby="browser-profile-apply"
       >
         <h3 id="browser-profile-apply" className="font-medium">
-          Apply a default or switch a browser
+          Apply a profile
         </h3>
         <p className="text-muted-foreground">
           Open an ordinary Browser tab in a thread once to initialize the shared
@@ -501,7 +489,7 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
           </select>
         </label>
         {selectedBrowser ? (
-          <p className="text-xs text-muted-foreground break-words">
+          <p className="break-words text-xs text-muted-foreground">
             {selectedBrowser.url || "Blank browser"} · {selectedBrowser.tabId}
             {selectedBrowser.controlLabel
               ? ` · Controlled by ${selectedBrowser.controlLabel}`
@@ -520,7 +508,7 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
             <span>
               I understand this replaces every cookie in the shared BB Browser
               session, affecting existing and future ordinary tabs on this host.
-              This becomes their shared default. Other tabs may need reloading.
+              This becomes their shared default.
             </span>
           </label>
         ) : selectedBrowser ? (
@@ -529,7 +517,7 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
             shared default will not change.
           </p>
         ) : null}
-        <div className="flex flex-wrap gap-2">
+        <div>
           <Button
             disabled={
               pending ||
@@ -548,68 +536,17 @@ function BrowserProfileSettings(_: PluginSettingsSectionProps) {
                   confirmShared,
                 });
                 await refreshProfiles();
-                return `${result.importedCookies} cookies applied${result.sharedDefault ? "; shared default saved for existing and future ordinary tabs" : " to the isolated browser"}.${result.reloaded ? " Browser reloaded." : " Reload the browser manually; its control may have changed."}`;
+                return `${result.importedCookies} cookies applied${
+                  result.sharedDefault
+                    ? "; shared default saved for existing and future ordinary tabs"
+                    : " to the isolated browser"
+                }.${result.reloaded ? " Browser reloaded." : " Reload the browser manually; its control may have changed."}`;
               })
             }
           >
             {shared ? "Apply shared default" : "Switch selected browser"}
           </Button>
-          <Button
-            variant="outline"
-            disabled={
-              pending ||
-              !selectedBrowser ||
-              !!selectedBrowser.controlLabel ||
-              (shared && !confirmShared)
-            }
-            onClick={() => {
-              if (
-                window.confirm(
-                  `Clear ALL cookies from ${shared ? "the shared session, affecting existing and future ordinary tabs" : "this isolated browser session"}?`,
-                )
-              )
-                operate(async () => {
-                  const result = await rpc.call("clear", {
-                    ...selectedTarget(),
-                    confirm: true,
-                  });
-                  await refreshProfiles();
-                  return `Cleared ${result.clearedCookies} cookies; the saved profiles themselves were preserved`;
-                });
-            }}
-          >
-            Clear destination cookies
-          </Button>
-          <Button
-            variant="outline"
-            disabled={pending || !selectedBrowser}
-            onClick={() =>
-              operate(async () => {
-                const { tabId, ...scope } = selectedTarget();
-                await rpc.call("openHomepage", scope);
-                return "Opened the configured homepage in a new browser";
-              })
-            }
-          >
-            Open homepage
-          </Button>
         </div>
-        {destinationHistory.length ? (
-          <div>
-            <h4 className="font-medium">Recent imports for this session</h4>
-            <ul className="mt-2 grid gap-1 text-xs text-muted-foreground">
-              {destinationHistory.slice(0, 5).map((entry, index) => (
-                <li key={`${entry.importedAt}:${index}`}>
-                  {entry.kind === "json"
-                    ? entry.fileName
-                    : `${entry.sourceLabel} / ${entry.profileLabel}`}{" "}
-                  · {entry.importedCookies} cookies ·{" "}
-                  {new Date(entry.importedAt).toLocaleString()}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
       </section>
       {pending ? (
         <p role="status" className="text-muted-foreground">
@@ -634,8 +571,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "session-import",
     title: "Browser profiles",
-    description:
-      "Saved cookie profiles, shared defaults, and browser switching",
+    description: "Save and apply browser cookie session profiles",
     component: BrowserProfileSettings,
   });
 });
