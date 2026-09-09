@@ -1,6 +1,7 @@
 import type { BbPluginApi, PluginAgentToolResult, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract, requestSchema, rpcContract, type ImportRecord, type Request } from "./contracts.js";
+import { createProfileManager } from "./profiles.js";
 
 const toolName = "bb_browser_session_import";
 const historyKey = "history";
@@ -58,6 +59,7 @@ export default function browserSessionImport(bb: BbPluginApi): void {
     return next;
   };
   const record = async (entry: ImportRecord) => {
+    profiles.forgetDestination(entry.destination);
     await updateHistory((entries) => [entry, ...entries].slice(0, 100));
     return entry;
   };
@@ -96,7 +98,19 @@ export default function browserSessionImport(bb: BbPluginApi): void {
       ? `${target.hostId}/personal`
       : `${target.hostId}/automation/${tab.profile.id}`;
   };
+  const profiles = createProfileManager(bb, {
+    listSources: (input) => host.call("listSources", {}, { hostId: input.hostId }),
+    importProfile: (input) => handlers.importProfile(input),
+    importCookies: (input) => handlers.importCookies(input),
+    reload: async (target) => {
+      const destination = await destinationFor(target);
+      await runScoped(target, destination, async (wsEndpoint) => {
+        await host.call("reload", { tabId: target.tabId, wsEndpoint }, { hostId: target.hostId });
+      });
+    },
+  });
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
+    ...profiles.handlers,
     async listHosts() {
       return (await bb.sdk.hosts.list()).map((host) => ({
         id: host.id,
@@ -177,17 +191,35 @@ export default function browserSessionImport(bb: BbPluginApi): void {
           { hostId: input.hostId },
         );
         await updateHistory((entries) => entries.filter((entry) => entry.destination !== destination));
+        profiles.forgetDestination(destination);
         return result;
       });
     },
     async openHomepage(scope) {
       const { homepageUrl } = await settings.get();
+      const { defaults } = await profiles.handlers.profiles({});
+      const selected = defaults.find((entry) => entry.hostId === scope.hostId);
       const created = await desktop.createTab({
         ...scope,
-        url: homepageUrl,
-        presentation: "reveal",
+        url: selected ? "about:blank" : homepageUrl,
+        presentation: selected ? "hidden" : "reveal",
       });
-      return { tabId: created.tab.tabId };
+      const target = { ...scope, tabId: created.tab.tabId };
+      try {
+        if (selected) {
+          await profiles.handlers.applyProfile({ ...target, profileId: selected.profileId, confirmShared: false });
+          const destination = await destinationFor(target);
+          await runScoped(target, destination, async (wsEndpoint) => {
+            await host.call("navigate", { tabId: target.tabId, wsEndpoint, url: homepageUrl }, { hostId: target.hostId });
+          });
+          await desktop.revealTab(target);
+        }
+        return { tabId: target.tabId };
+      } catch (error) {
+        const { tabs } = await desktop.listTabs(scope);
+        if (tabs.find((tab) => tab.tabId === target.tabId)?.control === null) await desktop.closeTab(target);
+        throw error;
+      }
     },
   };
   bb.rpc.register(rpcContract, handlers);
@@ -202,6 +234,13 @@ export default function browserSessionImport(bb: BbPluginApi): void {
       case "import-cookies": return handlers.importCookies({ ...request.target, fileName: request.fileName, cookies: request.cookies });
       case "clear": return handlers.clear({ ...request.target, confirm: request.confirm });
       case "open-homepage": return handlers.openHomepage(request.target);
+      case "profiles": return handlers.profiles({});
+      case "save-native-profile": { const { operation, ...input } = request; return handlers.saveNativeProfile(input); }
+      case "save-json-profile": { const { operation, ...input } = request; return handlers.saveJsonProfile(input); }
+      case "rename-profile": { const { operation, ...input } = request; return handlers.renameProfile(input); }
+      case "remove-profile": { const { operation, ...input } = request; return handlers.removeProfile(input); }
+      case "find-browsers": { const { operation, ...input } = request; return handlers.findBrowsers(input); }
+      case "apply-profile": { const { operation, ...input } = request; return handlers.applyProfile(input); }
     }
   };
   bb.agents.registerTool({
@@ -215,7 +254,7 @@ export default function browserSessionImport(bb: BbPluginApi): void {
   });
   bb.cli.register({
     name: "browser-session-import",
-    summary: "Import native profiles or JSON cookies into a selected Browser tab",
+    summary: "Manage saved cookie profiles, shared defaults, and browser session imports",
     commands: [{ name: "run", summary: "Run one session import operation", usage: "bb browser-session-import '<json>'" }],
     async run(argv) {
       try {

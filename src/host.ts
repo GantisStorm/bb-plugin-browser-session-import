@@ -644,6 +644,9 @@ async function writeCookies(
 ) {
   signal.throwIfAborted();
   return withPage(wsEndpoint, tabId, signal, async (connection, sessionId) => {
+    const previous = z.object({ cookies: z.array(z.record(z.string(), z.unknown())) })
+      .parse(await connection.request("Network.getAllCookies", {}, sessionId)).cookies;
+    try {
     await connection.request("Network.clearBrowserCookies", {}, sessionId);
     for (const cookie of cookies) {
       signal.throwIfAborted();
@@ -678,6 +681,15 @@ async function writeCookies(
       }
     }
     return { importedCookies: cookies.length };
+    } catch (error) {
+      try {
+        await connection.request("Network.clearBrowserCookies", {}, sessionId);
+        await connection.request("Network.setCookies", { cookies: previous }, sessionId);
+      } catch {
+        throw new Error("Cookie switching failed and the previous browser cookies could not be restored. Reapply a saved profile before continuing.");
+      }
+      throw new Error(`Cookie switching failed; the previous cookies were restored: ${error instanceof Error ? error.message : String(error)}`);
+    }
   });
 }
 
@@ -685,6 +697,17 @@ export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
     listSources: () => sources(),
+    navigate: ({ tabId, wsEndpoint, url }, context) =>
+      withPage(wsEndpoint, tabId, context.signal, async (connection, sessionId) => {
+        const result = z.object({ errorText: z.string().optional() }).parse(await connection.request("Page.navigate", { url }, sessionId));
+        if (result.errorText) throw new Error(result.errorText);
+        return { ok: true as const };
+      }),
+    reload: ({ tabId, wsEndpoint }, context) =>
+      withPage(wsEndpoint, tabId, context.signal, async (connection, sessionId) => {
+        await connection.request("Page.reload", {}, sessionId);
+        return { ok: true as const };
+      }),
     importProfile: async (
       { family, profileId, tabId, wsEndpoint },
       context,
