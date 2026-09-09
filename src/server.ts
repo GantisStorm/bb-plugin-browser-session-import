@@ -8,12 +8,13 @@ import {
   hostContract,
   requestSchema,
   rpcContract,
+  currentImportSchema,
   type Cookie,
   type Request,
 } from "./contracts.js";
-import { createProfileManager } from "./profiles.js";
 
 const toolName = "bb_browser_session_import";
+const currentKey = "current";
 
 function failure(error: unknown): PluginAgentToolResult {
   return {
@@ -26,7 +27,7 @@ function failure(error: unknown): PluginAgentToolResult {
     isError: true,
   };
 }
-type BrowserTarget = {
+type SharedTarget = {
   hostId: string;
   instanceId: string;
   generation: string;
@@ -34,34 +35,75 @@ type BrowserTarget = {
   tabId: string;
 };
 
-function scopeFor(target: BrowserTarget) {
-  return {
-    hostId: target.hostId,
-    instanceId: target.instanceId,
-    generation: target.generation,
-    threadId: target.threadId,
-  };
-}
-
 export default function browserSessionImport(bb: BbPluginApi): void {
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const desktop = bb.sdk.experimental_desktopBrowsers;
   const active = new Set<string>();
-  const runScoped = async <T>(
-    target: BrowserTarget,
-    destination: string,
-    work: (wsEndpoint: string) => Promise<T>,
-  ): Promise<T> => {
-    const key = destination;
+
+  const connectedHost = async () => {
+    const hosts = await bb.sdk.hosts.list();
+    const connected = hosts.find(
+      (candidate) => candidate.status === "connected",
+    );
+    if (!connected) throw new Error("No connected Browser host is available.");
+    return connected;
+  };
+  const sharedTab = async (hostId: string): Promise<SharedTarget> => {
+    const { instances } = await desktop.listInstances({ hostId });
+    const threads = new Map<string, string>();
+    for (const archived of [false, true]) {
+      for (let offset = 0; ; offset += 200) {
+        const page = await bb.sdk.threads.list({
+          archived,
+          includeHidden: true,
+          limit: 200,
+          offset,
+        });
+        for (const thread of page) {
+          if (!threads.has(thread.id))
+            threads.set(
+              thread.id,
+              thread.title ?? thread.titleFallback ?? thread.id,
+            );
+        }
+        if (page.length < 200) break;
+      }
+    }
+    for (const instance of instances) {
+      for (const threadId of threads.keys()) {
+        const scope = {
+          hostId,
+          instanceId: instance.instanceId,
+          generation: instance.generation,
+          threadId,
+        };
+        const { tabs } = await desktop.listTabs(scope);
+        const shared = tabs.find(
+          (tab) => tab.profile.kind === "personal" && tab.control === null,
+        );
+        if (shared) return { ...scope, tabId: shared.tabId };
+      }
+    }
+    throw new Error(
+      "Open an ordinary Browser tab in a thread first, then import again. The import applies to that shared session.",
+    );
+  };
+  const withSharedTab = async <R>(
+    hostId: string,
+    action: (target: SharedTarget, wsEndpoint: string) => Promise<R>,
+  ): Promise<R> => {
+    const key = `${hostId}/personal`;
     if (active.has(key))
-      throw new Error(
-        "A browser session import is already pending for this destination profile",
-      );
+      throw new Error("A browser session import is already in progress");
+    const target = await sharedTab(hostId);
     active.add(key);
     let leaseId: string | null = null;
     try {
       const lease = await desktop.acquireControl({
-        ...scopeFor(target),
+        hostId: target.hostId,
+        instanceId: target.instanceId,
+        generation: target.generation,
+        threadId: target.threadId,
         tabIds: [target.tabId],
         controllerLabel: "Browser Session Import",
         ttlMs: 120_000,
@@ -75,7 +117,7 @@ export default function browserSessionImport(bb: BbPluginApi): void {
         threadId: target.threadId,
         leaseId,
       });
-      return await work(connection.wsEndpoint);
+      return await action(target, connection.wsEndpoint);
     } finally {
       if (leaseId !== null) {
         await desktop
@@ -95,24 +137,24 @@ export default function browserSessionImport(bb: BbPluginApi): void {
       active.delete(key);
     }
   };
-  const destinationFor = async (target: BrowserTarget) => {
-    const { tabs } = await desktop.listTabs(scopeFor(target));
-    const tab = tabs.find((candidate) => candidate.tabId === target.tabId);
-    if (tab === undefined)
-      throw new Error("Selected Browser tab is no longer available");
-    return tab.profile.kind === "personal"
-      ? `${target.hostId}/personal`
-      : `${target.hostId}/automation/${tab.profile.id}`;
+  const reloadSharedTab = (
+    target: SharedTarget,
+    wsEndpoint: string,
+    hostId: string,
+  ) => host.call("reload", { tabId: target.tabId, wsEndpoint }, { hostId });
+  const storeCurrent = async (current: unknown) => {
+    await bb.storage.kv.set(currentKey, currentImportSchema.parse(current));
   };
-  async function importProfileInto(input: {
+  const readCurrent = async () => {
+    const value = await bb.storage.kv.get<unknown>(currentKey);
+    const parsed = currentImportSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  };
+  const importProfile = async (input: {
     hostId: string;
-    instanceId: string;
-    generation: string;
-    threadId: string;
-    tabId: string;
     family: string;
     profileId: string;
-  }) {
+  }) => {
     const sources = await host.call(
       "listSources",
       {},
@@ -127,142 +169,99 @@ export default function browserSessionImport(bb: BbPluginApi): void {
     if (source === undefined || profile === undefined) {
       throw new Error("Browser profile is unavailable; list sources again");
     }
-    const destination = await destinationFor(input);
-    const result = await runScoped(input, destination, async (wsEndpoint) =>
-      host.call(
+    const result = await withSharedTab(input.hostId, async (target, ws) => {
+      const imported = await host.call(
         "importProfile",
         {
           family: input.family,
           profileId: input.profileId,
-          tabId: input.tabId,
-          wsEndpoint,
+          tabId: target.tabId,
+          wsEndpoint: ws,
         },
         { hostId: input.hostId },
-      ),
-    );
-    if (destination.endsWith("/personal"))
-      profiles.forgetDestination(destination);
-    return result;
-  }
-  async function importCookiesInto(input: {
+      );
+      await reloadSharedTab(target, ws, input.hostId);
+      await storeCurrent({
+        kind: "profile",
+        sourceLabel: source.label,
+        profileLabel: profile.label,
+        importedCookies: imported.importedCookies,
+        importedAt: Date.now(),
+      });
+      return imported.importedCookies;
+    });
+    return { importedCookies: result, hostId: input.hostId };
+  };
+  const importCookies = async (input: {
     hostId: string;
-    instanceId: string;
-    generation: string;
-    threadId: string;
-    tabId: string;
     fileName: string;
     cookies: Cookie[];
-  }) {
-    const destination = await destinationFor(input);
-    const result = await runScoped(input, destination, async (wsEndpoint) =>
-      host.call(
+  }) => {
+    const result = await withSharedTab(input.hostId, async (target, ws) => {
+      const imported = await host.call(
         "importCookies",
-        { cookies: input.cookies, tabId: input.tabId, wsEndpoint },
+        { cookies: input.cookies, tabId: target.tabId, wsEndpoint: ws },
         { hostId: input.hostId },
-      ),
-    );
-    if (destination.endsWith("/personal"))
-      profiles.forgetDestination(destination);
-    return result;
-  }
-  const profiles = createProfileManager(bb, {
-    listSources: (input) =>
-      host.call("listSources", {}, { hostId: input.hostId }),
-    importProfile: importProfileInto,
-    importCookies: importCookiesInto,
-    reload: async (target) => {
-      const destination = await destinationFor(target);
-      await runScoped(target, destination, async (wsEndpoint) => {
-        await host.call(
-          "reload",
-          { tabId: target.tabId, wsEndpoint },
-          { hostId: target.hostId },
-        );
+      );
+      await reloadSharedTab(target, ws, input.hostId);
+      await storeCurrent({
+        kind: "json",
+        fileName: input.fileName,
+        importedCookies: imported.importedCookies,
+        importedAt: Date.now(),
       });
-    },
-  });
+      return imported.importedCookies;
+    });
+    return { importedCookies: result, hostId: input.hostId };
+  };
+  const clear = async (input: { hostId: string; confirm: true }) => {
+    const cleared = await withSharedTab(input.hostId, async (target, ws) => {
+      const result = await host.call(
+        "clear",
+        { tabId: target.tabId, wsEndpoint: ws },
+        { hostId: input.hostId },
+      );
+      await reloadSharedTab(target, ws, input.hostId);
+      await bb.storage.kv.delete(currentKey);
+      return result.clearedCookies;
+    });
+    return { clearedCookies: cleared };
+  };
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
-    ...profiles.handlers,
-    async listHosts() {
-      return (await bb.sdk.hosts.list()).map((host) => ({
-        id: host.id,
-        name: host.name,
-        status: host.status,
-      }));
-    },
-    async listInstances({ hostId }) {
-      const { instances } = await desktop.listInstances({ hostId });
-      return instances.map((instance) => ({
-        hostId: instance.hostId,
-        instanceId: instance.instanceId,
-        generation: instance.generation,
-        label: instance.label,
-      }));
-    },
-    async listTabs(scope) {
-      const { tabs } = await desktop.listTabs(scope);
-      return tabs.map((tab) => ({
-        tabId: tab.tabId,
-        title: tab.title,
-        url: tab.url,
-        profile: tab.profile.kind,
-        profileId: tab.profile.kind === "automation" ? tab.profile.id : null,
-        controlLabel: tab.control?.controllerLabel ?? null,
-      }));
-    },
     async listSources({ hostId }) {
       return host.call("listSources", {}, { hostId });
     },
-    importProfile: importProfileInto,
-    importCookies: importCookiesInto,
+    importProfile,
+    importCookies,
+    clear,
+    async current() {
+      const connected = await connectedHost();
+      return {
+        hostId: connected.id,
+        hostName: connected.name,
+        current: await readCurrent(),
+      };
+    },
   };
   bb.rpc.register(rpcContract, handlers);
   const execute = async (request: Request) => {
     switch (request.operation) {
-      case "list-hosts":
-        return handlers.listHosts({});
-      case "list-instances":
-        return handlers.listInstances(request);
-      case "list-tabs":
-        return handlers.listTabs(request.target);
       case "list-sources":
         return handlers.listSources(request);
       case "import-profile":
         return handlers.importProfile(request);
       case "import-cookies":
         return handlers.importCookies(request);
-      case "profiles":
-        return handlers.profiles({});
-      case "save-native-profile": {
-        const { operation, ...input } = request;
-        return handlers.saveNativeProfile(input);
-      }
-      case "save-json-profile": {
-        const { operation, ...input } = request;
-        return handlers.saveJsonProfile(input);
-      }
-      case "rename-profile": {
-        const { operation, ...input } = request;
-        return handlers.renameProfile(input);
-      }
-      case "remove-profile": {
-        const { operation, ...input } = request;
-        return handlers.removeProfile(input);
-      }
-      case "find-browsers": {
-        const { operation, ...input } = request;
-        return handlers.findBrowsers(input);
-      }
-      case "apply-profile": {
-        const { operation, ...input } = request;
-        return handlers.applyProfile(input);
-      }
+      case "clear":
+        return handlers.clear(request);
+      case "current":
+        return handlers.current({});
     }
   };
   bb.agents.registerTool({
     name: toolName,
     description:
-      "Import a native browser profile or supplied normalized cookies into an explicitly selected BB Browser tab, or apply one saved cookie profile. This does not provide general browser automation. List instances, tabs, and sources before importing.",
+      "Import a native browser profile or normalized cookies into the shared BB Browser session so every ordinary Browser tab uses that session. This does not provide general browser automation. List sources before importing a native profile. Clear requires confirm:true.",
     parameters: z.toJSONSchema(requestSchema, { io: "input" }),
     async execute(input) {
       try {
@@ -274,7 +273,7 @@ export default function browserSessionImport(bb: BbPluginApi): void {
   });
   bb.cli.register({
     name: "browser-session-import",
-    summary: "Save and apply browser cookie session profiles",
+    summary: "Import or clear the shared BB Browser session",
     commands: [
       {
         name: "run",

@@ -739,5 +739,24 @@ export default experimental_defineHostEntry({
     },
     importCookies: ({ cookies, tabId, wsEndpoint }, context) =>
       writeCookies(wsEndpoint, tabId, cookies, context.signal),
+    clear: ({ tabId, wsEndpoint }, context) =>
+      withPage(
+        wsEndpoint,
+        tabId,
+        context.signal,
+        async (connection, sessionId) => {
+          const before = z
+            .object({ cookies: z.array(z.unknown()) })
+            .parse(
+              await connection.request("Network.getAllCookies", {}, sessionId),
+            );
+          await connection.request(
+            "Network.clearBrowserCookies",
+            {},
+            sessionId,
+          );
+          return { clearedCookies: before.cookies.length };
+        },
+      ),
   },
 });
