@@ -42,6 +42,7 @@ function SessionImportPanel({ threadId }: { threadId: string }) {
   const [instances, setInstances] = useState<Instance[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [sources, setSources] = useState<CookieSource[] | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [history, setHistory] = useState<ImportRecord[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [tone, setTone] = useState<"error" | "success" | null>(null);
@@ -128,7 +129,10 @@ function SessionImportPanel({ threadId }: { threadId: string }) {
     const ticket = ++discovery.current;
     void rpc.call("listSources", { hostId }).then(
       (result) => {
-        if (ticket === discovery.current) setSources(result);
+        if (ticket === discovery.current) {
+          setSources(result);
+          setWizardOpen(true);
+        }
       },
       (error) => {
         if (ticket === discovery.current) report(error);
@@ -167,7 +171,7 @@ function SessionImportPanel({ threadId }: { threadId: string }) {
     }
   };
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
       <div className="border-b border-border p-4">
         <h2 className="text-sm font-medium">Browser session import</h2>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -180,9 +184,11 @@ function SessionImportPanel({ threadId }: { threadId: string }) {
         </div>
         {selectedTab === null ? null : <p className="mt-2 text-xs text-muted-foreground">Selected profile: {selectedTab.profile === "personal" ? "personal shared profile — imported cookies are shared with the user’s Browser" : "isolated automation profile"}.{selectedTab.controlLabel === null ? "" : ` Controlled by ${selectedTab.controlLabel}.`}</p>}
         <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={loadSources} disabled={busy !== null || target.hostId.length === 0}>Find local profiles</Button><Button type="button" variant="outline" size="sm" disabled={busy !== null || !scopeReady} onClick={() => void rpc.call("openHomepage", { hostId: target.hostId, instanceId: target.instanceId, generation: target.generation, threadId }).then(() => { setTone("success"); setMessage("Opened homepage in the selected Browser window"); }, report)}>Open homepage</Button></div>
+        <Button type="button" variant="outline" size="sm" className="mt-2" disabled={busy !== null || !ready} onClick={() => setWizardOpen(true)}>Import cookies</Button>
+        {!wizardOpen && message !== null ? <p role="status" className="mt-2 text-xs">{message}</p> : null}
       </div>
       <input ref={input} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file === undefined) return; void operate("import", async () => rpc.call("importCookies", { ...target, fileName: file.name, cookies: parseBrowserCookieImport(JSON.parse(await file.text())) })); }} />
-      <BrowserCookieImportWizard currentImport={history[0] ?? null} isClearing={busy === "clear"} isImporting={busy === "import"} isLoadingSources={false} message={message} messageTone={tone} sourceError={null} sources={sources} onClose={() => setSources(null)} onImportFromFile={() => input.current?.click()} onImportFromBrowser={(family, profileId) => void operate("import", () => rpc.call("importProfile", { ...target, family, profileId }))} onClear={() => { if (selectedTab === null) { report(new Error("Select a Browser tab before clearing cookies")); return; } const profile = selectedTab.profile === "personal" ? "the shared personal Browser profile" : "the isolated automation profile"; if (window.confirm(`Clear all imported cookies from ${profile}?`)) void operate("clear", () => rpc.call("clear", { ...target, confirm: true })); }} />
+      {wizardOpen ? <BrowserCookieImportWizard currentImport={history[0] ?? null} isClearing={busy === "clear"} isImporting={busy === "import"} isLoadingSources={false} message={message} messageTone={tone} sourceError={null} sources={sources} onClose={() => setWizardOpen(false)} onImportFromFile={() => input.current?.click()} onImportFromBrowser={(family, profileId) => void operate("import", () => rpc.call("importProfile", { ...target, family, profileId }))} onClear={() => { if (selectedTab === null) { report(new Error("Select a Browser tab before clearing cookies")); return; } const profile = selectedTab.profile === "personal" ? "the shared personal Browser profile" : "the isolated automation profile"; if (window.confirm(`Clear all cookies from ${profile}?`)) void operate("clear", () => rpc.call("clear", { ...target, confirm: true })); }} /> : null}
     </div>
   );
 }
