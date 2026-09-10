@@ -5,7 +5,7 @@ description: Import one browser cookie session into the shared BB Browser sessio
 
 # Browser Session Import
 
-This plugin retains installation id `browser`. It imports sessions only; use the official `browser-automation` plugin for general page automation.
+This plugin's installation id is `browser-session-import`. It imports sessions only; use the official `browser-automation` plugin for general page automation.
 
 Requires the native BB desktop Browser and Plugin SDK 0.4.48 or newer with `experimental_desktopBrowsers`. BB desktop v0.42.1 (SDK 0.4.47) is not supported. An npx-only web/server installation does not supply native desktop tabs.
 

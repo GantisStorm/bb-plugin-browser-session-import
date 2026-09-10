@@ -1,6 +1,6 @@
 {
-  "name": "bb-plugin-browser",
-  "version": "0.4.0",
+  "name": "bb-plugin-browser-session-import",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Import one cookie session into the shared BB Browser.",
